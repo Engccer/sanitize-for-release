@@ -104,6 +104,16 @@ check("정규식 문자클래스는 드라이브가 아니다",
 check("실제 드라이브 경로 탐지", bool(hits("non-system-drive", r'p = "G:\내 드라이브\x"')), True)
 check("드라이브 경로가 unix-user-home 으로 이중 계상되지 않음",
       hits("unix-user-home", "path = C:/Users/someone/proj"), [])
+# 로마자 실명은 대개 대문자로 시작한다. 소문자만 보는 규칙이 md 문서의 홈 경로를
+# 통째로 흘렸던 회귀.
+check("대문자로 시작하는 사용자명 탐지 (unix)",
+      bool(hits("unix-user-home", "경로는 /Users/JohnSmith/Projects/x 다")), True)
+check("대문자로 시작하는 사용자명 탐지 (windows)",
+      bool(hits("windows-user-home", r"경로는 C:\Users\JohnSmith\Projects 다")), True)
+for shared in ("/Users/Shared/data", "/home/runner/work/x", "/home/ubuntu/app"):
+    check(f"공유·CI 계정은 개인 흔적이 아니다 [{shared}]", hits("unix-user-home", shared), [])
+check("플레이스홀더 사용자명 제외", hits("unix-user-home", "/Users/<username>/proj"), [])
+check("windows 공유 폴더 제외", hits("windows-user-home", r"C:\Users\Public\Docs"), [])
 check("글롭 폴백 사슬 제외",
       hits("program-files-abs", r'for /d %%D in ("C:\Program Files\E A\jdk-21*") do'), [])
 check("버전 하드코딩 탐지",
@@ -225,6 +235,150 @@ with tempfile.TemporaryDirectory() as td:
     except ValueError:
         ok = False
     check("S5 --apply --format json 이 유효한 JSON", ok, True)
+
+print("\n치환표 내보내기")
+with tempfile.TemporaryDirectory() as td:
+    repo = Path(td) / "repo"
+    repo.mkdir(parents=True)
+    (repo / ".sanitize.local.md").write_text(
+        "## 치환\n\n| 패턴 | 대체 |\n|---|---|\n"
+        "| 단지이름 | 주택 A |\n"
+        "| re:[0-9]{3}동 | 주택 A |\n\n"
+        "## 삭제 경로\n\n- logs/*.log\n",
+        encoding="utf-8")
+    inside = repo / "rt.txt"
+    outside = Path(td) / "private" / "rt.txt"
+    code, _, err = run_scanner(repo, ".", "--emit-replace-text", str(inside))
+    check("E1 저장소 안으로는 내보내지 않는다", code, 2)
+    check("E1 실값 경고를 남긴다", "밖 경로로" in err, True)
+    check("E1 파일을 만들지 않는다", inside.exists(), False)
+    # 가드 기준은 스캔 루트가 아니라 git work tree 다. 하위 디렉터리에서 돌리면
+    # `..` 이 저장소 밖으로 보이지만 실제로는 추적 대상 자리에 실값이 떨어진다.
+    git(repo, "init", "-q")
+    (repo / "sub").mkdir()
+    leaked = repo / "leaked.txt"
+    code, _, _ = run_scanner(repo / "sub", "..", "--emit-replace-text", str(leaked))
+    check("E1b 하위 디렉터리에서도 work tree 안이면 거부", code, 2)
+    check("E1b 파일을 만들지 않는다", leaked.exists(), False)
+    code, _, _ = run_scanner(repo, ".", "--emit-replace-text", str(outside))
+    check("E2 저장소 밖으로는 내보낸다", code, 0)
+    check("E2 filter-repo 형식", outside.read_text(encoding="utf-8").split("\n")[0],
+          "단지이름==>주택 A")
+    check("E2 정규식은 regex: 로 나간다",
+          "regex:[0-9]{3}동==>주택 A" in outside.read_text(encoding="utf-8"), True)
+
+
+def run_history(cwd: Path, *args: str) -> tuple[int, str, str]:
+    proc = subprocess.run(
+        [sys.executable, str(ROOT / "scripts" / "history_check.py"), *args],
+        cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+print("\n히스토리 판정·역검증")
+with tempfile.TemporaryDirectory() as td:
+    repo = Path(td) / "repo"
+    (repo / "logs").mkdir(parents=True)
+    git(repo, "init", "-q")
+    (repo / "doc.md").write_text("단지이름 105동 1002호\n", encoding="utf-8")
+    (repo / "logs" / "a.log").write_text("raw\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "단지이름 로그 추가")
+    (repo / "logs" / "a.log").unlink()
+    (repo / "doc.md").write_text("주택 A\n", encoding="utf-8")
+    git(repo, "add", "-A")
+    git(repo, "commit", "-q", "-m", "일반형으로 교체")
+
+    rt = Path(td) / "rt.txt"
+    rt.write_text("단지이름==>주택 A\nregex:[0-9]{3}동==>주택 A\n", encoding="utf-8")
+    code, out, _ = run_history(repo, ".", "--replace-text", str(rt), "--path", "logs/*.log")
+    check("H1 이력 잔존이면 종료 코드 1", code, 1)
+    check("H1 커밋 메시지 잔존을 따로 센다", "메시지" in out, True)
+    check("H1 지운 경로의 커밋을 센다", "logs/*.log" in out, True)
+    # 입력이 실명·주소가 든 치환표이므로 결과에 원문이 그대로 나오면 안 된다
+    check("H1 좌변 원문을 출력하지 않는다", "단지이름" in out, False)
+
+    # 방언이 갈리는 정규식은 0건이 아니라 '모름'이다
+    rt2 = Path(td) / "rt2.txt"
+    rt2.write_text("regex:\\d{3}동==>주택 A\n", encoding="utf-8")
+    code, out, _ = run_history(repo, ".", "--replace-text", str(rt2))
+    check("H2 검증 불가 항목은 깨끗 판정을 막는다", code, 1)
+    check("H2 모름으로 보고한다", "검증하지 못한" in out, True)
+
+    # git 의 ERE 는 바이트를 센다. 한글 문자 클래스는 저장소에 대상이 있어도 0건이 나온다.
+    rt3 = Path(td) / "rt3.txt"
+    rt3.write_text("regex:단지[가-힣]{2}==>주택 A\n", encoding="utf-8")
+    code, out, _ = run_history(repo, ".", "--replace-text", str(rt3))
+    check("H2b 한글 문자 클래스는 검증 불가", code, 1)
+    check("H2b 0건으로 보고하지 않는다", "전부 0건" in out, False)
+
+    # 부정 클래스·대문자 축약은 UTF-8 바이트에도 맞아 수량자가 문자를 세지 않는다.
+    # 실측: 저장소에 대상이 있어도 git 은 0건, Python 은 매치.
+    sys.path.insert(0, str(ROOT / "scripts"))
+    import history_check as hcmod  # noqa: E402
+    for pat in ("서울[^0-9]{2}중학교", "서울[^ ]{2}중학교"):
+        check(f"H2a 부정 문자 클래스는 검증 불가 [{pat}]",
+              m.byte_regex_unsafe(pat) is not None, True)
+    for pat in ("서울\\S{2}중학교", "서울\\D{2}중학교", "서울\\W{2}중학교"):
+        check(f"H2a 대문자 부정 축약은 검증 불가 [{pat}]",
+              bool(hcmod.ERE_UNSAFE.search(pat)), True)
+    check("H2a 리터럴 한글은 통과", m.byte_regex_unsafe("[0-9]{3}동"), None)
+    check("H2a 교대 그룹은 통과", m.byte_regex_unsafe("(강동|서초)중학교"), None)
+
+    # filter-repo 의 glob: 은 경로가 아니라 내용 글롭이다
+    rt4 = Path(td) / "rt4.txt"
+    rt4.write_text("glob:단지*호==>주택 A\n", encoding="utf-8")
+    code, out, _ = run_history(repo, ".", "--replace-text", str(rt4))
+    check("H2c glob: 을 경로로 오해하지 않는다", code, 1)
+    check("H2c 내용 글롭이라 밝힌다", "내용 글롭" in out, True)
+
+    # 마스킹 계약: 좌변도 경로 지정도 자리와 길이만 남는다
+    check("H2c 좌변 원문을 출력하지 않는다", "단지" in out, False)
+
+    # 새 저장소 재생성(= 이력이 없어진 상태)이면 전부 0
+    fresh = Path(td) / "fresh"
+    fresh.mkdir()
+    (fresh / "doc.md").write_text("주택 A\n", encoding="utf-8")
+    git(fresh, "init", "-q")
+    git(fresh, "add", "-A")
+    git(fresh, "commit", "-q", "-m", "initial public release")
+    code, out, _ = run_history(fresh, ".", "--replace-text", str(rt), "--path", "logs/*.log")
+    check("H3 이력이 깨끗하면 종료 코드 0", code, 0)
+
+    # git 이 오류로 끝난 것을 0건으로 접으면 깨진 입력이 깨끗 판정을 받는다
+    code, out, _ = run_history(fresh, ".", "--path", ":(nosuchmagic)x")
+    check("H3b git 오류는 0건이 아니라 모름", code, 1)
+    check("H3b 세지 못한 칸을 숫자로 찍지 않는다", "검증하지 못한" in out, True)
+
+    code, _, err = run_history(fresh, ".")
+    check("H4 입력이 없으면 실행 오류", code, 2)
+    code, _, _ = run_history(Path(td), ".", "--replace-text", str(rt))
+    check("H5 git 저장소가 아니면 실행 오류", code, 2)
+
+    # 브랜치가 없어도 HEAD 가 가리키는 이력은 검사해야 한다
+    git(repo, "checkout", "-q", "--detach")
+    git(repo, "branch", "-D", "master")
+    git(repo, "branch", "-D", "main")
+    code, out, _ = run_history(repo, ".", "--replace-text", str(rt))
+    check("H6 detached HEAD 도 이력으로 본다", code, 1)
+
+    # 패턴 파일의 '## 탐지' 절은 기본에서 이력 검사에 넣지 않는다
+    local = Path(td) / "loc"
+    local.mkdir()
+    git(local, "init", "-q")
+    (local / "a.md").write_text("공개 문맥의 흔한말\n", encoding="utf-8")
+    git(local, "add", "-A")
+    git(local, "commit", "-q", "-m", "init")
+    (local / ".sanitize.local.md").write_text(
+        "## 치환\n\n| 패턴 | 대체 |\n|---|---|\n| 없는이름 | ○○담당관 |\n\n"
+        "## 탐지\n\n- 흔한말\n", encoding="utf-8")
+    code, out, _ = run_history(local, ".", "--local")
+    check("H7 탐지 절은 기본에서 제외", code, 0)
+    # 범위를 좁힌 선택은 눈에 보여야 한다. 보이지 않으면 과탐이 침묵 미탐으로 바뀐다.
+    check("H7 제외한 개수를 보고한다", "'## 탐지' 절 1개는 검사하지 않음" in out, True)
+    code, _, _ = run_history(local, ".", "--local", "--with-detect")
+    check("H7 --with-detect 로 넣을 수 있다", code, 1)
+
 
 # 종료 코드 계약
 with tempfile.TemporaryDirectory() as td:

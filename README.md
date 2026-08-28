@@ -51,7 +51,7 @@ python scripts/scan_traces.py <저장소 경로>
 | 한국어 실명·주소 | [`ko-pii`](https://github.com/Marker-Inc-Korea/ko-pii) | 체크섬으로 확정되는 형식만 자체 검증 |
 | 머신 로컬 흔적 | 없음 | **자체 구현** |
 | 개인 도구 결합 | 없음 | **자체 구현** |
-| git 히스토리 | `git filter-repo` | 재작성 대신 새 저장소를 권하는 판정 기준 |
+| git 히스토리 | `git filter-repo` | **자체 구현** (재작성 필요 판정과 역검증) |
 | 릴리스 준비도 | [`trailofbits/skills@open-sourcing`](https://github.com/trailofbits/skills) | 위임 |
 
 ### 실제 식별자는 이 저장소에 없다
@@ -68,6 +68,7 @@ python scripts/scan_traces.py . --axes local,coupling
 python scripts/scan_traces.py . --format json
 python scripts/scan_traces.py . --staged             # pre-commit 훅용
 python scripts/scan_traces.py <반출본> --apply --yes  # 치환표 적용
+python scripts/scan_traces.py . --emit-replace-text <저장소 밖>/replace-text.txt
 ```
 
 종료 코드는 발견 0건이면 `0`, 있으면 `1`, 실행 오류면 `2`입니다. 공개 전환 게이트로 그대로 이어 붙일 수 있습니다.
@@ -105,6 +106,21 @@ API_DOC = "https://example.com/G:/legacy"   # sanitize: allow 문서 링크
 ```
 
 파일 전체를 제외하려면 앞부분 8줄 안에 `sanitize: allow-file <근거>` 를 둡니다. 테스트 픽스처, 샘플 데이터, vendored 코드에 씁니다. 저장소 전체에 걸친 반복 오탐은 `.sanitize.local.md` 의 `## 허용` 절에 모읍니다.
+
+## 히스토리 판정
+
+트리에서 지운 것이 이력에 남아 있는지는 정보의 성질이 아니라 실측으로 가릅니다. 같은 명령이 재작성 **전**에는 "재작성이 필요한가"의 판정으로, **후**에는 "재작성이 끝났는가"의 역검증으로 읽힙니다.
+
+```bash
+python scripts/history_check.py <저장소> --local
+python scripts/history_check.py <저장소> --replace-text <저장소 밖>/replace-text.txt --path 'logs/*.log'
+```
+
+항목마다 파일 내용(`git log -S`)·HEAD 트리(`git grep`)·커밋 메시지 셋을 세고, 지운 경로는 따로 셉니다. 메시지 열이 곧 `--replace-message` 필요 여부입니다. 입력이 실명·주소가 든 치환표이므로 **실제 값은 출력하지 않고** 자리 번호와 가린 형태로만 보고합니다.
+
+검증할 수 없는 항목은 0건이 아니라 **모름**으로 보고하고 깨끗 판정을 막습니다. `git log -S`는 바이트 단위 POSIX ERE라 `서울[가-힣]{2,4}중학교` 같은 패턴에 오류가 아니라 0건을 돌려주는데(실측), 한국어 정제에서 가장 관용적인 패턴 형태가 정확히 이것이라 특별히 막습니다. 대안은 표기 변형마다 리터럴 한 줄이고, 그것이 이 스킬이 권하는 기본형입니다.
+
+절차 전체는 [references/history-rewrite.md](references/history-rewrite.md)에 있습니다.
 
 ## 테스트
 

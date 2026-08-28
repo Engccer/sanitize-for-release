@@ -127,6 +127,11 @@ CARD_CONTEXT = re.compile(
 PATH_TAIL = r"(?:[^\s\"'`<>|,;)]|[ ](?=[^\s\"'`<>|,;)]))"
 # 홈 디렉터리를 가리키는 표기는 셸·OS마다 다르다. 한 형태만 잡으면 나머지가 샌다.
 HOME_PREFIX = r"(?:~|\$HOME|\$\{HOME\}|%USERPROFILE%|%HOMEPATH%)"
+# 홈 아래 첫 조각이 사용자명이 아닌 것들. 공유 폴더와 CI·문서용 일반 계정은 개인 흔적이
+# 아니다. 사용자명 자체는 대소문자를 가리지 않는다. 로마자 실명은 대개 대문자로 시작하는데,
+# 소문자만 보는 규칙은 그 실명을 통째로 흘린다(실측: md 문서에 남은 홈 경로).
+HOME_USER_VETO = (r"(?!(?i:runner|user|username|shared|public|default|ubuntu|ec2-user"
+                  r"|root|admin|you|your[-_]?name)\b)")
 
 
 def builtin_rules() -> list[Rule]:
@@ -137,10 +142,11 @@ def builtin_rules() -> list[Rule]:
 
     # --- local: 저자 컴퓨터에만 존재하는 경로 ---------------------------------
     add("local", "windows-user-home",
-        re.compile(r"[A-Za-z]:[\\/]Users[\\/](?!\s)[A-Za-z0-9._-]+"),
+        re.compile(rf"[A-Za-z]:[\\/]Users[\\/]{HOME_USER_VETO}(?!\s)[A-Za-z0-9._-]+"),
         "사용자 홈 절대경로. 인자나 환경변수로 받게 한다")
     add("local", "unix-user-home",
-        re.compile(r"(?<![\w.:])/(?:Users|home)/(?!runner\b|user\b|<)[a-z][a-z0-9._-]{1,31}"),
+        re.compile(rf"(?<![\w.:])/(?:Users|home)/{HOME_USER_VETO}"
+                   rf"[A-Za-z][A-Za-z0-9._-]{{1,31}}"),
         "사용자 홈 절대경로. ~ 또는 $HOME 으로 바꾼다")
     add("local", "non-system-drive",
         re.compile(r"(?<![\w:\\])[D-Zd-z]:[\\/](?![\\/])"),
@@ -269,6 +275,46 @@ def not_placeholder(text: str) -> bool:
     return not PLACEHOLDER_HINT.search(text)
 
 
+def byte_regex_unsafe(pattern: str) -> str | None:
+    """바이트 단위 정규식에서 뜻이 달라지는 자리를 찾는다.
+
+    실측(git 2.51): 저장소에 "서울강동중학교" 가 있어도 `서울[가-힣]{2,4}중학교` 와
+    `서울.{2,4}중학교` 는 git 에서 0건이다. git 의 ERE 도, filter-repo 의 치환표도
+    문자가 아니라 **바이트**를 세므로 한글 한 글자가 3바이트로 갈린다. 반면 한글을
+    리터럴로만 쓴 `[0-9]{3}동` 은 양쪽에서 같은 뜻이라 통과시킨다. 한국어 정제에서
+    가장 관용적인 패턴 형태가 앞의 둘이라 그 자리만 정확히 막는다.
+    """
+    i, n = 0, len(pattern)
+    while i < n:
+        ch = pattern[i]
+        if ch == "\\":
+            i += 2
+            continue
+        if ch == "[":
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                # 부정 클래스는 UTF-8 선행·연속 바이트에도 맞는다. `서울[^0-9]{2}중학교` 는
+                # 문자 둘이 아니라 바이트 둘을 세므로 Python 에서는 맞고 git 에서는 0건이다.
+                # 바이트 정규식에서 작성자 의도와 거의 항상 어긋나므로 무조건 막는다.
+                return "부정 문자 클래스는 바이트에도 맞아 수량자가 문자를 세지 않음 (예: [^0-9]{2})"
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                if pattern[j] == "\\":
+                    j += 1
+                elif ord(pattern[j]) > 127:
+                    return "문자 클래스 안의 비-ASCII 는 바이트 범위로 해석됨 (예: [가-힣])"
+                j += 1
+            i = j + 1
+            continue
+        if ch == ".":
+            return "`.` 는 바이트 하나라 다중바이트 문자를 쪼갬"
+        if ord(ch) > 127 and i + 1 < n and pattern[i + 1] in "*+?{":
+            return "비-ASCII 문자에 붙은 수량자는 마지막 바이트만 반복함"
+        i += 1
+    return None
+
+
 def not_glob(text: str) -> bool:
     """글롭이 든 경로는 하드코딩이 아니라 탐색 패턴이다(권장 폴백 사슬의 일부)."""
     return "*" not in text and "?" not in text
@@ -292,6 +338,7 @@ class LocalConfig:
     allow_literals: list[str] = field(default_factory=list)
     allow_regexes: list[re.Pattern] = field(default_factory=list)
     allow_paths: list[str] = field(default_factory=list)
+    removed_paths: list[str] = field(default_factory=list)
     found: bool = False
 
 
@@ -299,6 +346,8 @@ SECTION_ALIASES = {
     "치환": "replace", "replace": "replace", "replacements": "replace",
     "탐지": "detect", "detect": "detect", "patterns": "detect",
     "허용": "allow", "allow": "allow", "allowlist": "allow", "ignore": "allow",
+    "삭제 경로": "removed", "삭제경로": "removed", "removed": "removed",
+    "removed paths": "removed", "paths": "removed",
 }
 
 
@@ -353,12 +402,16 @@ def load_local_config(root: Path) -> LocalConfig:
             if cells[0].lower() in ("패턴", "pattern", "from"):
                 continue
             if not cells[1]:
-                print(f"경고: 치환 대체값이 비어 있어 건너뜁니다 ({cells[0]}). "
+                print(f"경고: 치환 대체값이 비어 있어 건너뜁니다 ({redact(cells[0])}). "
                       f"삭제가 필요하면 대체값을 명시하세요.", file=sys.stderr)
                 continue
             pat = _compile(cells[0], "치환")
             if pat:
                 cfg.replacements.append((pat, cells[1], cells[0]))
+        elif section == "removed":
+            m = re.match(r"^[-*+]\s+(.+)$", line)
+            if m and m.group(1).strip():
+                cfg.removed_paths.append(m.group(1).strip())
         elif section in ("detect", "allow"):
             m = re.match(r"^[-*+]\s+(.+)$", line)
             if not m:                       # 산문은 규칙이 아니다
@@ -677,6 +730,62 @@ def apply_replacements(files: list[Path], root: Path, cfg: LocalConfig,
     return changed_files, changed_hits, skipped
 
 
+def emit_replace_text(cfg: LocalConfig, dest: Path, root: Path) -> int:
+    """치환표를 git-filter-repo 의 --replace-text 입력 형식으로 내보낸다.
+
+    반출본 치환(유형 B)과 이력 소급 치환(히스토리 재작성)은 같은 표를 쓴다. 표가 둘로
+    갈리는 순간 한쪽에만 등록된 표기 변형이 생기고, 그 변형이 이력에 그대로 남는다.
+    """
+    # 기준은 스캔 루트가 아니라 git work tree 다. 하위 디렉터리에서 돌리면 `..` 이
+    # 저장소 밖으로 보이지만 실제로는 추적 대상 자리에 실값 파일이 떨어진다.
+    top = (_run_git(["rev-parse", "--show-toplevel"], root) or "").strip()
+    guarded = Path(top).resolve() if top else root
+    try:
+        dest.resolve().relative_to(guarded)
+    except ValueError:
+        pass
+    else:
+        print(f"오류: 치환표는 실제 식별자를 담습니다. 저장소({guarded}) 밖 경로로 "
+              f"내보내세요.", file=sys.stderr)
+        return 2
+    out_lines: list[str] = []
+    warned = 0
+    for _pat, repl, raw in cfg.replacements:
+        if "==>" in raw or "==>" in repl:
+            print(f"경고: '==>' 가 든 항목은 filter-repo 형식과 충돌해 건너뜁니다 "
+                  f"({redact(raw)}).", file=sys.stderr)
+            continue
+        if raw.startswith("re:"):
+            body = raw[3:].strip()
+            # filter-repo 는 치환표를 바이트로 읽어 컴파일하고 git 의 검증 명령도 바이트를
+            # 센다. `[가-힣]{2,4}` 같은 조각은 치환 결과도 역검증 결과도 신뢰할 수 없다.
+            unsafe = byte_regex_unsafe(body)
+            if unsafe:
+                warned += 1
+                print(f"경고: 이 정규식은 filter-repo 의 바이트 처리에서 다르게 동작하고 "
+                      f"history_check.py 도 검증하지 못합니다({unsafe}). "
+                      f"표기 변형마다 리터럴 한 줄로 나누세요 ({redact(raw)}).", file=sys.stderr)
+            out_lines.append(f"regex:{body}==>{repl}")
+        else:
+            out_lines.append(f"{raw}==>{repl}")
+    if not out_lines:
+        print(f"오류: {LOCAL_FILE} 의 '## 치환' 절에 내보낼 항목이 없습니다.", file=sys.stderr)
+        return 2
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text("\n".join(out_lines) + "\n", encoding="utf-8")
+    except OSError as exc:
+        print(f"오류: 쓰지 못했습니다 ({dest}): {exc}", file=sys.stderr)
+        return 2
+    print(f"{len(out_lines)}줄을 {dest} 에 썼습니다. 실값이 담긴 파일이므로 격리 폴더에 둡니다.")
+    if warned:
+        print(f"경고가 붙은 {warned}줄은 재작성 뒤 역검증에서 '모름'으로 남습니다. "
+              f"그 줄을 리터럴로 바꾸기 전에는 게이트가 참이 되지 않습니다.")
+    else:
+        print("재작성 뒤 scripts/history_check.py 의 입력으로 그대로 씁니다.")
+    return 0
+
+
 def origin_url(root: Path) -> str:
     return (_run_git(["remote", "get-url", "origin"], root) or "").strip()
 
@@ -760,6 +869,9 @@ def build_parser() -> argparse.ArgumentParser:
                     help="로컬 스킬 디렉터리 (coupling 축 보강용)")
     ap.add_argument("--no-skill-scan", action="store_true",
                     help="로컬 스킬 목록을 읽지 않는다")
+    ap.add_argument("--emit-replace-text", type=Path, default=None, metavar="OUT",
+                    help="치환표를 git-filter-repo 의 --replace-text 형식으로 내보낸다. "
+                         "실값이 담기므로 저장소 밖 경로만 받는다")
     ap.add_argument("--apply", action="store_true",
                     help="패턴 파일의 치환표를 적용한다 (반출본에서만 쓸 것)")
     ap.add_argument("--yes", action="store_true", help="--apply 확인 생략")
@@ -778,6 +890,13 @@ def run(args) -> int:
         return 2
 
     cfg = load_local_config(root)
+
+    if args.emit_replace_text is not None:
+        if not cfg.found:
+            print(f"오류: {LOCAL_FILE} 이 없어 내보낼 치환표가 없습니다(SKILL.md 1단계).",
+                  file=sys.stderr)
+            return 2
+        return emit_replace_text(cfg, args.emit_replace_text, root)
 
     selected = set(AXES) if args.axes == "all" else {
         a.strip() for a in args.axes.split(",") if a.strip()}
