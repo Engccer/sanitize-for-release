@@ -1,0 +1,13 @@
+# 정제 패턴 파일: 실제 식별자가 들어가므로 절대 커밋하지 않는다.
+# assets/sanitize.local.md.template 은 이 패턴에 걸리지 않도록 확장자를 붙여 둔 것이다.
+.sanitize.local.md
+*.local.md
+
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+.DS_Store
+desktop.ini
+Thumbs.db
