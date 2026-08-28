@@ -118,6 +118,8 @@ python {skill_dir}/scripts/history_check.py <대상repo> --local
 git log --all --name-only --pretty=format: | sort -u | grep -iE '\.env|credential|secret|\.pem|\.key|\.p12|\.mobileprovision'
 ```
 
+`--local`은 패턴 파일의 **`## 치환` 좌변과 `## 삭제 경로`만** 본다. `## 탐지` 절은 후보를 넓게 잡는 용도라 정당한 공개 문맥에서도 맞고, 그것이 게이트에 상시 걸리면 게이트가 꺼진다. 제외한 개수는 출력에 한 줄 남고, 탐지 절까지 세려면 `--with-detect`를 붙인다(5단계 게이트는 그쪽을 쓴다).
+
 항목마다 셋을 센다. `git log --all -S'<좌변>'`(과거 커밋의 파일 안), `git grep -F '<좌변>' HEAD`(지금 체크아웃되는 파일 안. 정규식 항목은 `-E`), `git log --all --format=%B`의 좌변 등장(커밋 메시지). 지운 경로는 `git log --all -- '<경로>'`로 따로 센다. 셋이 서로 다른 층이라 하나로 갈음되지 않고, 메시지 열이 곧 `--replace-message` 필요 여부를 정한다.
 
 **파일명 스윕을 따로 두는 이유**는 위 검사가 전부 "누가 목록에 적은 것"만 세기 때문이다. 아무도 적지 않은 `.env`·키 파일은 그 목록에 없다. gitleaks도 메우지 못한다. 내용 패턴을 보는 도구라 바이너리 `.p12`·`.mobileprovision`은 걸리지 않는다.
@@ -148,11 +150,15 @@ git log --all --name-only --pretty=format: | sort -u | grep -iE '\.env|credentia
 
 ```bash
 python {skill_dir}/scripts/scan_traces.py . \
-  && python {skill_dir}/scripts/history_check.py . --local \
+  && python {skill_dir}/scripts/history_check.py . --local --with-detect \
   && gh repo edit --visibility public
 ```
 
-히스토리 검사를 게이트에 함께 거는 이유는, 3단계 판정이 통과였더라도 그 뒤의 커밋이 같은 것을 다시 들여올 수 있기 때문이다. 재작성을 했다면 이 명령이 곧 역검증이다. 패턴 파일이 없으면 `--local`은 실행 오류(2)가 되므로, 치환 대상이 없는 저장소에서는 이 항을 뺀다.
+히스토리 검사를 게이트에 함께 거는 이유는, 3단계 판정이 통과였더라도 그 뒤의 커밋이 같은 것을 다시 들여올 수 있기 때문이다. 재작성을 했다면 이 명령이 곧 역검증이다.
+
+**여기서만 `--with-detect`를 붙인다.** 3단계의 판정은 "재작성이 필요한가"를 묻는 자리라 후보 패턴까지 세면 판정이 흐려지지만, 이 자리는 되돌릴 수 없는 실행 직전이라 요구 수준이 다르다. `&&` 체인에서는 "탐지 절 N개를 검사하지 않음"이라는 고지가 찍혀도 사람이 멈출 지점이 없다. 고지가 결정 지점에 닿지 않으면 고지가 아니다.
+
+패턴 파일이 없으면 `--local`은 실행 오류(2)가 되므로, 치환 대상이 없는 저장소에서는 이 항을 뺀다.
 
 ## 상시 게이트 (유형 A의 지속 규율)
 
