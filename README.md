@@ -52,6 +52,7 @@ python scripts/scan_traces.py <저장소 경로>
 | 머신 로컬 흔적 | 없음 | **자체 구현** |
 | 개인 도구 결합 | 없음 | **자체 구현** |
 | git 히스토리 | `git filter-repo` | **자체 구현** (재작성 필요 판정과 역검증) |
+| 플랫폼 종속 (선택 축) | 없음 | **자체 구현** (특정 에이전트 전용 도구 이름 탐지 + 중립 서술 대응표) |
 | 릴리스 준비도 | [`trailofbits/skills@open-sourcing`](https://github.com/trailofbits/skills) | 위임 |
 
 ### 실제 식별자는 이 저장소에 없다

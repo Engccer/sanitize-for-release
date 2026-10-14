@@ -96,8 +96,9 @@ Presidio는 spaCy NER 기반이라 한국어 전용 recognizer가 없다. `PII-S
 자작 스캐너가 담당한다. 의존성 없이 Python 3.10+ 표준 라이브러리만 쓴다.
 
 ```bash
-python scripts/scan_traces.py <경로>                    # 전 축
+python scripts/scan_traces.py <경로>                    # 기본 축(선택 축 제외)
 python scripts/scan_traces.py <경로> --axes local,coupling
+python scripts/scan_traces.py <경로> --axes all,platform  # 선택 축 더하기 (platform-neutral.md)
 python scripts/scan_traces.py <경로> --format json      # 스크립트에서 소비
 python scripts/scan_traces.py <경로> --apply --yes      # 치환 (반출본에서만)
 ```

@@ -126,6 +126,31 @@ for spelling in ("~", "$HOME", "${HOME}", "%USERPROFILE%"):
 check("스킬 경로 참조 탐지 [$HOME]",
       bool(hits("agent-skills-path", '"$HOME/.claude/skills/foo/bar.py"')), True)
 
+print("\n플랫폼 종속 규칙 (선택 축)")
+check("MCP 도구 이름 탐지",
+      hits("mcp-tool-name", "select:mcp__claude-in-chrome__read_page 로 로드"),
+      ["mcp__claude-in-chrome__read_page"])
+check("MCP 도구 안의 기능명은 이중 계상하지 않음",
+      hits("browser-tool-name", "mcp__claude-in-chrome__javascript_tool"), [])
+check("단독 도구 이름 탐지", hits("browser-tool-name", "`javascript_tool`로 값 확인"),
+      ["javascript_tool"])
+check("한글 조사가 붙어도 탐지 (\\b 회귀)",
+      hits("browser-tool-name", "javascript_tool로 일괄 추출"), ["javascript_tool"])
+check("한글 조사가 붙은 ToolSearch 탐지", hits("agent-product", "ToolSearch로 추가 로드"),
+      ["ToolSearch"])
+check("백틱 없는 일반 단어 find 는 보지 않음", hits("browser-tool-name", "find the button"), [])
+check("백틱 친 find 는 도구 이름", hits("browser-tool-name", "`find`로 버튼 찾기"), ["`find`"])
+check("제품명 탐지", hits("agent-product", "Claude in Chrome 확장으로 조작"), ["Claude in Chrome"])
+check("CLI 고정 호출 탐지", hits("agent-cli-invocation", "& claude -p $prompt"), ["claude -p"])
+check("백틱 친 CLI 이름 탐지", hits("agent-cli-invocation", "자동 실행에는 `claude` CLI가 필요"), ["`claude`"])
+check("일반 단어 claude 는 보지 않음", hits("agent-cli-invocation", "ask claude about it"), [])
+check("Playwright MCP 도구 이름은 중립이라 보지 않음",
+      hits("browser-tool-name", "`browser_navigate` 로 이동"), [])
+check("Playwright 플러그인 접두어는 플랫폼 종속",
+      hits("mcp-tool-name", "mcp__plugin_playwright_playwright__browser_click"),
+      ["mcp__plugin_playwright_playwright__browser_click"])
+check("플랫폼 축은 기본(all)에 들지 않음", "platform" in m.AXES, False)
+
 print("\n카드 문맥 (오탐 억제)")
 check("문맥 없는 숫자열은 카드로 보지 않음", hits("credit-card", f"order_id = {CARD}"), [])
 check("카드 문맥이 있으면 탐지", bool(hits("credit-card", f"card_number = {CARD}")), True)
@@ -388,6 +413,11 @@ with tempfile.TemporaryDirectory() as td:
     check("계약 깨끗하면 0", run_scanner(clean, ".", "--no-skill-scan")[0], 0)
     check("계약 없는 디렉터리는 2", run_scanner(clean, "no-such-dir")[0], 2)
     check("계약 알 수 없는 축은 2", run_scanner(clean, ".", "--axes", "nope")[0], 2)
+    (clean / "p.md").write_text("Claude in Chrome 확장 필요\n", encoding="utf-8")
+    check("계약 플랫폼 표현은 기본 축에서 통과",
+          run_scanner(clean, ".", "--no-skill-scan")[0], 0)
+    check("계약 all,platform 으로 고르면 탐지",
+          run_scanner(clean, ".", "--no-skill-scan", "--axes", "all,platform")[0], 1)
     check("계약 --apply 에 --yes 없으면 2",
           run_scanner(clean, ".", "--axes", "custom", "--apply")[0], 2)
 

@@ -77,6 +77,7 @@ grep -q 'sanitize.local' <대상repo>/.gitignore || echo '.sanitize.local.md' >>
 | 결합 흔적 | 개인 스킬·에이전트 설정·저자 개인 지침 참조 | (없음) | `--axes coupling` |
 | 저장소 고유 | `.sanitize.local.md`에 적은 패턴 | (없음) | `--axes custom` |
 | 히스토리 | 위 축들이 과거 커밋에 있었나 | `gitleaks` (크리덴셜) | `history_check.py` (치환 좌변·삭제 경로) |
+| 플랫폼 종속 (선택) | 특정 에이전트 전용 도구 이름·제품명·CLI 고정 호출 | (없음) | `--axes all,platform` |
 
 가운데 네 축이 이 스킬의 존재 이유다. 기성 시크릿 스캐너는 크리덴셜만 보고 한국어 PII 도구는 사람 이름만 보는데, 사용자 홈 경로가 README에 박혀 있는 것은 둘 다 놓친다. 그건 개인정보 문제이자 동시에 **외부 사용자에게 그 저장소가 동작하지 않는다**는 뜻이다.
 
@@ -86,7 +87,9 @@ grep -q 'sanitize.local' <대상repo>/.gitignore || echo '.sanitize.local.md' >>
 python {skill_dir}/scripts/scan_traces.py <대상repo>
 ```
 
-기본은 전 축이다. gitleaks가 있으면 `--axes local,coupling,pii,custom`으로 크리덴셜 축을 넘기고 gitleaks 결과를 쓴다. 종료 코드는 발견 0건이면 0, 있으면 1이라 공개 전환 직전 게이트로 그대로 이어 붙일 수 있다.
+**플랫폼 종속 축은 기본에서 빠진다.** 특정 에이전트용으로 만든 저장소에서는 그 이름이 정당한 내용이기 때문이다. 다른 에이전트 사용자도 쓰게 공개하기로 정했을 때만 고르고, 탐지된 자리는 기계 치환하지 않고 대응표를 보며 문맥에 맞게 바꾼다. 대응표와 원칙은 [references/platform-neutral.md](references/platform-neutral.md).
+
+기본은 선택 축을 뺀 전 축이다. gitleaks가 있으면 `--axes local,coupling,pii,custom`으로 크리덴셜 축을 넘기고 gitleaks 결과를 쓴다. 종료 코드는 발견 0건이면 0, 있으면 1이라 공개 전환 직전 게이트로 그대로 이어 붙일 수 있다.
 
 **리포트 맨 앞의 「보지 못한 파일」을 먼저 본다.** 상한을 넘는 파일, 바이너리로 판정된 파일, 인코딩을 판정하지 못한 파일이 여기 나온다. 발견 0건과 「본 것 중에 없음」은 다른 말이고, 게이트를 참으로 만드는 것은 앞쪽이다.
 

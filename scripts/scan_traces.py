@@ -8,6 +8,8 @@
   pii      형식으로 확정 가능한 개인 식별자 (주민번호·사업자번호는 체크섬 검증)
   secret   크리덴셜 (gitleaks가 없을 때의 폴백. 작업 트리만 본다)
   custom   대상 저장소의 .sanitize.local.md 에 적힌 패턴
+  platform 특정 에이전트 플랫폼 종속 (도구 이름·제품명·CLI 호출). 기본에서 빠지는
+           선택 축이라 --axes all,platform 처럼 이름으로 고른다
 
 이름·주소 같은 사전 의존 탐지는 ko-pii 에 맡긴다. 여기서는 체크섬이나
 형식만으로 확정되는 것, 그리고 기성 도구의 관심 밖에 있는 것만 다룬다.
@@ -216,6 +218,32 @@ def builtin_rules() -> list[Rule]:
                        access[_-]?key|auth[_-]?token|client[_-]?secret)\b\s*[:=]\s*
                        (['"])([^'"\s]{12,})\1"""),
         "코드에 대입된 크리덴셜", validator="not_placeholder", redact=True)
+    # --- platform: 특정 에이전트 플랫폼에 묶인 서술 (선택 축) ---------------
+    # 플랫폼 전용 도구 이름은 다른 에이전트에 없다. 문맥에 따라 바꿀 말이 달라서
+    # 기계 치환하지 않고 탐지만 한다. 대응표는 references/platform-neutral.md.
+    # Playwright MCP 의 browser_* 도구 이름은 어느 에이전트에서나 같은 이름이라 보지 않는다.
+    # 플랫폼에 묶이는 것은 그것을 감싼 mcp__plugin_* 접두어뿐이다.
+    # 경계는 \b 가 아니라 ASCII 둘레로 본다. 한글은 \w 라서 `javascript_tool로` 처럼
+    # 조사가 붙으면 \b 가 서지 않아 한국어 문서의 대부분을 흘린다.
+    lo, ro = r"(?<![A-Za-z0-9_])", r"(?![A-Za-z0-9_])"
+    add("platform", "mcp-tool-name",
+        re.compile(rf"{lo}mcp__[A-Za-z0-9_-]+"),
+        "MCP 도구 네임스페이스. 필요한 기능(페이지 JS 실행·접근성 트리 읽기 등)으로 서술한다")
+    add("platform", "browser-tool-name",
+        re.compile(rf"{lo}(?:javascript_tool|read_page|form_input|get_page_text|browser_batch"
+                   r"|file_upload|resize_window|list_connected_browsers|gif_creator|upload_image"
+                   r"|shortcuts_(?:list|execute)|(?:switch|select)_browser"
+                   rf"|tabs_(?:context|create|close)(?:_mcp)?|read_(?:console_messages|network_requests)){ro}"
+                   r"|`(?:find|computer|navigate|zoom)`"),
+        "브라우저 제어 도구 이름. 기능 서술로 바꾼다(대응표 참조)")
+    add("platform", "agent-product",
+        re.compile(r"Claude\s+in\s+Chrome|Claude\s+Code|Claude\s+Desktop|Codex\s+CLI|Gemini\s+CLI"
+                   rf"|{lo}ToolSearch{ro}"),
+        "에이전트 제품명. 검증 환경 예시는 한 번만 남기고 허용 표시한다")
+    add("platform", "agent-cli-invocation",
+        re.compile(rf"{lo}(?:claude|codex|gemini|agy)(?:\.exe)?\s+(?:-p|--print|exec){ro}"
+                   r"|`(?:claude|codex|gemini|agy)(?:\.exe)?`"),
+        "에이전트 CLI 고정 호출·지칭. 환경 변수 등으로 바꿀 수 있게 한다")
     return r
 
 
@@ -797,6 +825,7 @@ def origin_url(root: Path) -> str:
 AXIS_LABEL = {
     "local": "머신 로컬 흔적", "coupling": "개인 도구 결합",
     "pii": "개인 식별자", "secret": "크리덴셜", "custom": "저장소 고유 패턴",
+    "platform": "플랫폼 종속",
 }
 
 
@@ -826,7 +855,7 @@ def report_text(findings: list[Finding], skipped: list[Skipped], root: Path,
     for f in findings:
         by_axis.setdefault(f.axis, []).append(f)
 
-    for axis in ("secret", "pii", "custom", "local", "coupling"):
+    for axis in ("secret", "pii", "custom", "local", "coupling", "platform"):
         items = by_axis.get(axis)
         if not items:
             continue
@@ -849,6 +878,9 @@ def report_text(findings: list[Finding], skipped: list[Skipped], root: Path,
 # --------------------------------------------------------------------------
 
 AXES = ("local", "coupling", "pii", "secret", "custom")
+# 기본(all)에서 빠지는 축. 특정 플랫폼용으로 만든 저장소에서는 그 이름이 정당한 내용이라
+# 상시 게이트에 넣으면 게이트가 꺼진다. 플랫폼 중립 공개를 목표로 할 때만 고른다.
+OPTIONAL_AXES = ("platform",)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -858,7 +890,8 @@ def build_parser() -> argparse.ArgumentParser:
         epilog="종료 코드: 0 발견 없음 / 1 발견 있음 / 2 실행 오류")
     ap.add_argument("path", nargs="?", default=".", help="스캔할 저장소 경로 (기본: 현재 디렉터리)")
     ap.add_argument("--axes", default="all",
-                    help=f"쉼표 구분. {','.join(AXES)} 또는 all (기본: all)")
+                    help=f"쉼표 구분. {','.join(AXES + OPTIONAL_AXES)} 또는 all "
+                         f"(기본: all = {','.join(AXES)}. 선택 축은 all,platform 처럼 더한다)")
     ap.add_argument("--format", choices=("text", "json"), default="text")
     ap.add_argument("--staged", action="store_true",
                     help="staged 파일만 스캔 (pre-commit 훅용). 내용은 인덱스가 아니라 "
@@ -898,9 +931,13 @@ def run(args) -> int:
             return 2
         return emit_replace_text(cfg, args.emit_replace_text, root)
 
-    selected = set(AXES) if args.axes == "all" else {
-        a.strip() for a in args.axes.split(",") if a.strip()}
-    unknown = selected - set(AXES)
+    selected: set[str] = set()
+    for a in (x.strip() for x in args.axes.split(",")):
+        if a == "all":
+            selected |= set(AXES)
+        elif a:
+            selected.add(a)
+    unknown = selected - set(AXES) - set(OPTIONAL_AXES)
     if unknown:
         print(f"오류: 알 수 없는 축: {', '.join(sorted(unknown))}", file=sys.stderr)
         return 2
